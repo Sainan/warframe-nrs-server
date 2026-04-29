@@ -1,19 +1,12 @@
 #include <iostream>
 #include <unordered_map>
 
-#ifndef PORTS
-	#if DEPLOYMENT
-		#define PORTS { 4950, 3960 }
-	#else
-		#define PORTS { 1234 }
-	#endif
-#endif
-
 #define MAX_PROXY_CONNECTIONS 100
 #define PROXYING_FOR_LEGACY true
 #define FORCE_PROXY_CONNECTIONS false
 
 #define ENABLE_HTTP true
+#define ENABLE_EXIT_ENDPOINT false
 
 // If a motd.txt exists, send it to users after first binding via an invite.
 #ifndef ENABLE_MOTD
@@ -22,13 +15,6 @@
 
 // Opportunistically ask clients for an introduction in an attempt to grab their username and buildId.
 #define REQUEST_INTRODUCTION true
-#ifndef INTRODUCTION_PORT
-	#if DEPLOYMENT
-		#define INTRODUCTION_PORT 4955
-	#else
-		#define INTRODUCTION_PORT 1235
-	#endif
-#endif
 
 #ifndef THIS_SERVER_ID
 	#define THIS_SERVER_ID 0
@@ -37,9 +23,6 @@
 
 #include <crc32.hpp>
 #include <crc32c.hpp>
-/*#if IS_LAN_DEPLOYMENT
-#include <dhcp.hpp>
-#endif*/
 #if MULTI_NRS
 #include <dnsResolver.hpp>
 #endif
@@ -48,11 +31,10 @@
 #endif
 #include <json.hpp>
 #include <lzf.hpp>
+#include <main.hpp>
 #include <md5.hpp>
 #include <MemoryRefReader.hpp>
-#if IS_LAN_DEPLOYMENT
 #include <netAdaptor.hpp>
-#endif
 #include <netInfo.hpp>
 #if JITTER
 #include <os.hpp>
@@ -1024,8 +1006,19 @@ static network_u16_t setup_proxying(const MongoId& left_id, bool left_is_server,
 }
 #endif
 
-int main(int argc, const char** argv)
+#if REQUEST_INTRODUCTION
+static native_u16_t introduction_port;
+#endif
+
+int entry(std::vector<std::string>&& args, bool console)
 {
+	if (args.size() < 2)
+	{
+		std::cout << "Syntax: warframe-nrs-server <deployment type>" << std::endl;
+		std::cout << "See README.md for details" << std::endl;
+		return 1;
+	}
+
 #if USE_DTLSBRIDGE
 	init();
 #endif
@@ -1173,14 +1166,6 @@ int main(int argc, const char** argv)
 			}
 		}
 		//std::cout << addr.toString() << " - salt = " << salt << std::endl;
-
-#if DEPLOYMENT
-		if (!is_dtls && !is_u32_or_below(salt))
-		{
-			std::cout << addr.toString() << " - Ignoring cleartext traffic from a post-DTLS version: " << string::bin2hex(data) << std::endl;
-			return;
-		}
-#endif
 
 		uint8_t packet_id;
 		sr.u8(packet_id);
@@ -1476,7 +1461,7 @@ int main(int argc, const char** argv)
 				{
 					MongoId sender;
 					memset(sender.ints, 0x33, 12);
-					send_introduction(s, sender, acctId, SocketAddr(this_machine_ip, (native_u16_t)INTRODUCTION_PORT), SocketAddr(data->reflexive_ip, data->reflexive_port_server), IT_FROM_PEER, 69, salt, is_dtls);
+					send_introduction(s, sender, acctId, SocketAddr(this_machine_ip, introduction_port), SocketAddr(data->reflexive_ip, data->reflexive_port_server), IT_FROM_PEER, 69, salt, is_dtls);
 				}
 #endif
 			}
@@ -2423,22 +2408,45 @@ int main(int argc, const char** argv)
 	});
 
 	IpAddr bind_addr;
-#if IS_LAN_DEPLOYMENT
-	for (const auto& ad : netAdaptor::getAll())
+	if (args[1] == "lan-pc" || args[1] == "lan-server")
 	{
-		//if (auto info = dhcp::requestInfo(ad.ip_addr); info.isValid())
-#if SOUP_WINDOWS
-		if (ad.name.find("Virtual") == std::string::npos)
-#else
-		if (ad.name != "lo")
-#endif
+		for (const auto& ad : netAdaptor::getAll())
 		{
-			bind_addr = ad.ip_addr;
-			std::cout << "Using " << ad.name << " (" << bind_addr.toString() << ")" << std::endl;
-			break;
+			//if (auto info = dhcp::requestInfo(ad.ip_addr); info.isValid())
+	#if SOUP_WINDOWS
+			if (ad.name.find("Virtual") == std::string::npos)
+	#else
+			if (ad.name != "lo")
+	#endif
+			{
+				bind_addr = ad.ip_addr;
+				std::cout << "Using " << ad.name << " (" << bind_addr.toString() << ")" << std::endl;
+				break;
+			}
 		}
 	}
+	else if (args[1] != "public")
+	{
+		std::cout << "Unknown deployment type: " << args[1] << std::endl;
+		std::cout << "See README.md for details" << std::endl;
+		return 1;
+	}
+
+	std::vector<uint16_t> ports;
+	if (args[1] == "lan-pc")
+	{
+		ports = { 1234 };
+#if REQUEST_INTRODUCTION
+		introduction_port = 1235;
 #endif
+	}
+	else
+	{
+		ports = { 4950, 3960 };
+#if REQUEST_INTRODUCTION
+		introduction_port = 4955;
+#endif
+	}
 
 	this_machine_ip = bind_addr.getV4();
 	if (this_machine_ip == 0)
@@ -2448,7 +2456,7 @@ int main(int argc, const char** argv)
 		this_machine_ip = addr.getV4();
 	}
 
-	for (const uint16_t& port : PORTS)
+	for (const uint16_t& port : ports)
 	{
 		if (!serv.bindUdp(bind_addr, port, &srv))
 		{
@@ -2523,12 +2531,12 @@ int main(int argc, const char** argv)
 			}
 		}
 	});
-	if (!serv.bindUdp(bind_addr, INTRODUCTION_PORT, &introduction_srv))
+	if (!serv.bindUdp(bind_addr, introduction_port, &introduction_srv))
 	{
-		std::cout << "Failed to bind UDP/" << INTRODUCTION_PORT << std::endl;
+		std::cout << "Failed to bind UDP/" << introduction_port << std::endl;
 		return 1;
 	}
-	std::cout << "Bound UDP/" << INTRODUCTION_PORT << std::endl;
+	std::cout << "Bound UDP/" << introduction_port << std::endl;
 #endif
 
 #if MAX_PROXY_CONNECTIONS > 0
@@ -2824,7 +2832,7 @@ int main(int argc, const char** argv)
 			}
 			ServerWebService::sendText(s, "false");
 		}
-#if !DEPLOYMENT
+#if ENABLE_EXIT_ENDPOINT
 		else if (req.path == "/api/exit")
 		{
 			ServerWebService::sendText(s, "ok");
@@ -2836,7 +2844,7 @@ int main(int argc, const char** argv)
 			ServerWebService::send404(s);
 		}
 	});
-	for (const uint16_t& port : PORTS)
+	for (const uint16_t& port : ports)
 	{
 		if (serv.bind(bind_addr, port, &web_srv))
 		{
@@ -2858,7 +2866,7 @@ int main(int argc, const char** argv)
 	signal(SIGTERM, [](int) { exit(0); });
 #endif
 
-#if DEPLOYMENT
+#if !ENABLE_EXIT_ENDPOINT
 	serv.run();
 	SOUP_UNREACHABLE;
 #else
@@ -2876,3 +2884,5 @@ int main(int argc, const char** argv)
 	return 0;
 #endif
 }
+
+SOUP_MAIN_CLI(entry);

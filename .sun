@@ -3,12 +3,6 @@ c++ 17
 require Soup/soup
 arg -O3
 
-## Require DTLS and refuse service for too new versions
-arg -DDEPLOYMENT=false
-
-## Bind to the LAN IP of the first physical network adaptor
-arg -DIS_LAN_DEPLOYMENT=true
-
 ## Uncomment to enable DTLS support
 # arg -DUSE_DTLSBRIDGE=true
 # linker_arg -L.
