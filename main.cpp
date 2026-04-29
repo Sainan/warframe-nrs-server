@@ -9,11 +9,6 @@
 	#endif
 #endif
 
-// Users banished to the shadow realm have incoming and outgoing P2P connection attempts blocked.
-#define ENABLE_SHADOW_REALM DEPLOYMENT
-#define BANISH_U41_1_TO_SHADOW_REALM false
-#define BANISH_U42_TO_SHADOW_REALM DEPLOYMENT
-
 #define MAX_PROXY_CONNECTIONS 100
 #define PROXYING_FOR_LEGACY true
 #define FORCE_PROXY_CONNECTIONS false
@@ -410,9 +405,6 @@ struct AccountData
 
 	std::string_view salt;
 	bool is_dtls;
-#if ENABLE_SHADOW_REALM
-	bool in_shadow_realm = false;
-#endif
 #if ENABLE_MOTD
 	bool sent_motd = false;
 #endif
@@ -421,7 +413,7 @@ struct AccountData
 #endif
 
 	uint8_t status; // presence state
-	std::string presence;
+	std::string presence; // presence is a json object. exact format depends on version, e.g. U41.1 changed "level" to "l", etc.
 
 	time_t last_nat_bind;
 
@@ -1201,7 +1193,6 @@ int main(int argc, const char** argv)
 
 				C2STest test;
 				bool has_timestamp = false;
-				bool is_u42 = false;
 				uint8_t task_id;
 
 				if (!is_u10_or_below(salt)) // >= U11
@@ -1215,8 +1206,7 @@ int main(int argc, const char** argv)
 							sr.u64_le(test.timestamp);
 							if (sr.getPosition() + 1 == data.size()) // >= U42
 							{
-								is_u42 = true;
-								sr.u8(task_id);
+								return;
 							}
 							else
 							{
@@ -1253,20 +1243,6 @@ int main(int argc, const char** argv)
 				{
 					// ',' acctId ',' NatHash
 				}
-
-#if ENABLE_SHADOW_REALM && BANISH_U42_TO_SHADOW_REALM
-				if (is_u42)
-				{
-					if (auto e = account_map.find(test.acctId); e != account_map.end())
-					{
-						if (!e->second.in_shadow_realm)
-						{
-							e->second.in_shadow_realm = true;
-							std::cout << addr.toString() << "#" << test.acctId.toString() << " - Banished to the shadow realm" << std::endl;
-						}
-					}
-				}
-#endif
 
 				//std::cout << addr.toString() << " - local_addr: " << IpAddr((native_u32_t)test.local_ip).toString() << ":" << test.local_port << std::endl;
 				if (!is_u15_or_below(salt)) // >= U15.14
@@ -1306,16 +1282,9 @@ int main(int argc, const char** argv)
 						{
 							sw.u64_le(test.timestamp);
 						}
-						if (is_u42) // >= U42
-						{
-							sw.u8(task_id);
-						}
-						else
-						{
-							sw.u32_be(test.local_ip);
-							sw.u16_le(test.local_port);
-							ser_str(sw, salt, test.local_addr_str);
-						}
+						sw.u32_be(test.local_ip);
+						sw.u16_le(test.local_port);
+						ser_str(sw, salt, test.local_addr_str);
 						sw.u32_be(reflexive_ip);
 						sw.u16_le(reflexive_port);
 					}
@@ -1434,15 +1403,6 @@ int main(int argc, const char** argv)
 					{
 						data->presence = std::move(presence);
 						std::cout << addr.toString() << "#" << acctId.toString() << " - Updated presence: " << data->presence << std::endl;
-#if ENABLE_SHADOW_REALM && BANISH_U41_1_TO_SHADOW_REALM
-						if (!data->in_shadow_realm
-							&& (data->presence.find("{\"l\":") != std::string::npos || data->presence.find(",\"l\":") != std::string::npos)
-							)
-						{
-							data->in_shadow_realm = true;
-							std::cout << addr.toString() << "#" << acctId.toString() << " - Banished to the shadow realm" << std::endl;
-						}
-#endif
 					}
 
 #if ENABLE_MOTD
@@ -1499,15 +1459,7 @@ int main(int argc, const char** argv)
 				{
 					if (sr.hasMore()) // U42 + Token
 					{
-#if ENABLE_SHADOW_REALM && BANISH_U42_TO_SHADOW_REALM
-						if (!data->in_shadow_realm)
-						{
-							data->in_shadow_realm = true;
-							std::cout << addr.toString() << "#" << acctId.toString() << " - Banished to the shadow realm" << std::endl;
-						}
-#endif
-						ser_str(sr, salt, data->username);
-						//sr.skip(40); // Token
+						return;
 					}
 					else if (!NatHash.empty())
 					{
@@ -1648,7 +1600,7 @@ int main(int argc, const char** argv)
 			//std::cout << addr.toString() << " - Request resolve pending punchthroughs" << std::endl;
 			if (!is_u10_or_below(salt)) // >= U11
 			{
-#if ENABLE_SHADOW_REALM || MULTI_NRS
+#if MULTI_NRS
 				MongoId acctId;
 				acctId.io(sr);
 #else
@@ -1672,49 +1624,34 @@ int main(int argc, const char** argv)
 					std::cout << addr.toString() << " - Query addresses but there's more: " << string::bin2hex(data) << std::endl;
 				}
 
-#if ENABLE_SHADOW_REALM
-				if (auto e = account_map.find(acctId); e != account_map.end())
+				for (auto& r : rr.results)
 				{
-					if (!e->second.in_shadow_realm)
-#endif
+					//std::cout << addr.toString() << " - Resolving " << r.account_id.toString() << std::endl;
+					if (auto e = account_map.find(r.account_id); e != account_map.end())
 					{
-						for (auto& r : rr.results)
+						if (e->second.isActive())
 						{
-							//std::cout << addr.toString() << " - Resolving " << r.account_id.toString() << std::endl;
-							if (auto e = account_map.find(r.account_id); e != account_map.end())
-							{
-								if (e->second.isActive())
-								{
-#if ENABLE_SHADOW_REALM
-									if (!e->second.in_shadow_realm)
-#endif
-									{
 #if FORCE_PROXY_CONNECTIONS
-										r.reflexive_ip = SOUP_IPV4(10, 0, 0, 0);
-										r.local_ip = SOUP_IPV4(10, 0, 0, 0);
+							r.reflexive_ip = SOUP_IPV4(10, 0, 0, 0);
+							r.local_ip = SOUP_IPV4(10, 0, 0, 0);
 #else
-										r.reflexive_ip = e->second.reflexive_ip;
-										r.local_ip = e->second.local_ip;
+							r.reflexive_ip = e->second.reflexive_ip;
+							r.local_ip = e->second.local_ip;
 #endif
-										r.reflexive_port = ((packet_id & 0x20) ? e->second.reflexive_port_server : e->second.reflexive_port_client);
-										r.local_port = ((packet_id & 0x20) ? e->second.local_port_server : e->second.local_port_client);
-									}
-									continue;
-								}
-								erase_account(e);
-							}
-#if MULTI_NRS
-							if (auto e = remote_account_map.find(r.account_id); e != remote_account_map.end())
-							{
-								r.bindingServerId = e->second;
-								r.unresolved = true;
-							}
-#endif
+							r.reflexive_port = ((packet_id & 0x20) ? e->second.reflexive_port_server : e->second.reflexive_port_client);
+							r.local_port = ((packet_id & 0x20) ? e->second.local_port_server : e->second.local_port_client);
+							continue;
 						}
+						erase_account(e);
 					}
-#if ENABLE_SHADOW_REALM
-				}
+#if MULTI_NRS
+					if (auto e = remote_account_map.find(r.account_id); e != remote_account_map.end())
+					{
+						r.bindingServerId = e->second;
+						r.unresolved = true;
+					}
 #endif
+				}
 
 #if MULTI_NRS
 				if (!is_u32_or_below(salt))
@@ -1887,12 +1824,6 @@ int main(int argc, const char** argv)
 				const bool to_server = (packet_id & 0x20);
 				if (auto e = account_map.find(acctId); e != account_map.end())
 				{
-#if ENABLE_SHADOW_REALM
-					if (e->second.in_shadow_realm)
-					{
-						break; // This should be unreachable due to resolve-response.
-					}
-#endif
 					local_ip = e->second.local_ip;
 					from_server = (addr.getPort() == e->second.reflexive_port_server);
 					local_port = (from_server ? e->second.local_port_server : e->second.local_port_client);
@@ -1902,12 +1833,6 @@ int main(int argc, const char** argv)
 				{
 					if (e->second.isActive())
 					{
-#if ENABLE_SHADOW_REALM
-						if (e->second.in_shadow_realm)
-						{
-							break; // This should be unreachable due to resolve-response.
-						}
-#endif
 						SocketAddr to_addr(e->second.reflexive_ip, to_server ? e->second.reflexive_port_server : e->second.reflexive_port_client);
 #if FORCE_PROXY_CONNECTIONS
 						// For emulation's sake
@@ -1963,16 +1888,6 @@ int main(int argc, const char** argv)
 				}
 				//std::cout << addr.toString() << " - Proxy request for " << target.toString() << std::endl;
 
-#if ENABLE_SHADOW_REALM
-				if (auto e = account_map.find(acctId); e != account_map.end())
-				{
-					if (e->second.in_shadow_realm)
-					{
-						break; // This should be unreachable due to resolve-response.
-					}
-				}
-#endif
-
 				if (auto proxy_port = setup_proxying(acctId, false, target, true))
 				{
 					std::cout << addr.toString() << "#" << acctId.toString() << " - Obtained proxy port " << Endianness::toNative(proxy_port) << " to connect to " << target.toString() << std::endl;
@@ -1981,12 +1896,7 @@ int main(int argc, const char** argv)
 					{
 						if (e->second.isActive())
 						{
-#if ENABLE_SHADOW_REALM
-							if (!e->second.in_shadow_realm) // This should always be true due to resolve-response.
-#endif
-							{
-								send_introduction(s, acctId, target, SocketAddr(this_machine_ip, proxy_port), SocketAddr(e->second.reflexive_ip, e->second.reflexive_port_server), IT_VIA_PROXY, task_id, e->second.salt, e->second.is_dtls);
-							}
+							send_introduction(s, acctId, target, SocketAddr(this_machine_ip, proxy_port), SocketAddr(e->second.reflexive_ip, e->second.reflexive_port_server), IT_VIA_PROXY, task_id, e->second.salt, e->second.is_dtls);
 							break;
 						}
 						erase_account(e);
@@ -2360,20 +2270,15 @@ int main(int argc, const char** argv)
 								{
 									if (e->second.isActive())
 									{
-#if ENABLE_SHADOW_REALM
-										if (!e->second.in_shadow_realm)
-#endif
-										{
 #if FORCE_PROXY_CONNECTIONS
-											r.reflexive_ip = SOUP_IPV4(10, 0, 0, 0);
-											r.local_ip = SOUP_IPV4(10, 0, 0, 0);
+										r.reflexive_ip = SOUP_IPV4(10, 0, 0, 0);
+										r.local_ip = SOUP_IPV4(10, 0, 0, 0);
 #else
-											r.reflexive_ip = e->second.reflexive_ip;
-											r.local_ip = e->second.local_ip;
+										r.reflexive_ip = e->second.reflexive_ip;
+										r.local_ip = e->second.local_ip;
 #endif
-											r.reflexive_port = ((c & 0x20) ? e->second.reflexive_port_server : e->second.reflexive_port_client);
-											r.local_port = ((c & 0x20) ? e->second.local_port_server : e->second.local_port_client);
-										}
+										r.reflexive_port = ((c & 0x20) ? e->second.reflexive_port_server : e->second.reflexive_port_client);
+										r.local_port = ((c & 0x20) ? e->second.local_port_server : e->second.local_port_client);
 									}
 									else
 									{
