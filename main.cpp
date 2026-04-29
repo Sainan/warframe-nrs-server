@@ -1178,6 +1178,7 @@ int entry(std::vector<std::string>&& args, bool console)
 
 				C2STest test;
 				bool has_timestamp = false;
+				bool is_u42 = false;
 				uint8_t task_id;
 
 				if (!is_u10_or_below(salt)) // >= U11
@@ -1191,7 +1192,8 @@ int entry(std::vector<std::string>&& args, bool console)
 							sr.u64_le(test.timestamp);
 							if (sr.getPosition() + 1 == data.size()) // >= U42
 							{
-								return;
+								is_u42 = true;
+								sr.u8(task_id);
 							}
 							else
 							{
@@ -1267,9 +1269,16 @@ int entry(std::vector<std::string>&& args, bool console)
 						{
 							sw.u64_le(test.timestamp);
 						}
-						sw.u32_be(test.local_ip);
-						sw.u16_le(test.local_port);
-						ser_str(sw, salt, test.local_addr_str);
+						if (is_u42) // >= U42
+						{
+							sw.u8(task_id);
+						}
+						else
+						{
+							sw.u32_be(test.local_ip);
+							sw.u16_le(test.local_port);
+							ser_str(sw, salt, test.local_addr_str);
+						}
 						sw.u32_be(reflexive_ip);
 						sw.u16_le(reflexive_port);
 					}
@@ -1444,7 +1453,8 @@ int entry(std::vector<std::string>&& args, bool console)
 				{
 					if (sr.hasMore()) // U42 + Token
 					{
-						return;
+						ser_str(sr, salt, data->username);
+						//sr.skip(40); // Token
 					}
 					else if (!NatHash.empty())
 					{
