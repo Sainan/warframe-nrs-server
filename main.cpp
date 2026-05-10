@@ -2679,6 +2679,7 @@ int entry(std::vector<std::string>&& args, bool console)
 						obj.add("local_port_server", e->second.local_port_server);
 						obj.add("status", e->second.status);
 						obj.add("presence", e->second.presence);
+						obj.add("last_announce", e->second.last_nat_bind);
 						// Data available via SNS and conditionally via P2P
 						if (e->second.nat_behaviour != NAT_UNK)
 						{
