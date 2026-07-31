@@ -1,0 +1,12 @@
+U11 - introduced binary format
+U11 - moved presence to NRS
+U12 - MD5 -> CRC32
+U13 - got rid of NatHash
+U15.14 - introduced proxying
+U16.5 - added support for multiple binding servers
+U28 - changed C2STest packet format
+U30 - changed C2STest packet format
+U32 - CRC32 -> CRC32C
+U33 - introduced DTLS support
+U33 - changed C2STest packet format
+U42 - added token
