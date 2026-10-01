@@ -186,6 +186,45 @@ static bool is_u35_or_below(const std::string_view& salt)
 		;
 }
 
+static bool is_u42_or_below(const std::string_view& salt)
+{
+	return salt == "b471e49539930dc9b5a131e6247c7387H"
+		|| salt == "b471e49539930dc9b5a131e6247c7387G"
+		|| is_u35_or_below(salt)
+		;
+}
+
+static std::string strip_platform_suffix(std::string name)
+{
+	for (size_t pos; (pos = name.find("\xEE\x80\x80")) != std::string::npos; )
+	{
+		name.erase(pos, 3);
+	}
+	return name;
+}
+
+static std::string enrich_invite_json(const std::string& session_info, const std::string& inviter_name)
+{
+	const std::string name = strip_platform_suffix(inviter_name);
+	UniquePtr<JsonNode> root = json::decode(session_info);
+	if (!root || !root->isObj())
+	{
+		root = soup::make_unique<JsonObject>();
+	}
+	JsonObject& obj = root->reinterpretAsObj();
+	obj.add("n", name);
+	obj.add("name", name);
+	obj.add("from", name);
+	obj.add("playerName", name);
+	obj.add("displayName", name);
+	if (auto e = obj.find("s"); e && e->isObj())
+	{
+		e->reinterpretAsObj().add("n", name);
+		e->reinterpretAsObj().add("name", name);
+	}
+	return obj.encode();
+}
+
 static uint64_t md5_checksum(const char* data, size_t size, const std::string_view& salt)
 {
 	md5::State st;
@@ -443,13 +482,26 @@ struct AccountData
 		{
 			if (!is_u15_14_or_below(salt))
 			{
+				if (!is_u42_or_below(salt))
+				{
+					std::string from = strip_platform_suffix(inviter_name);
+					ser_str(sw, this->salt, from);
+				}
 				sw.u8(bindingServerId);
 			}
 			const_cast<MongoId&>(invitee_acctId).io(sw);
 		}
 		sw.u8(presence_state);
 		ser_str(sw, this->salt, const_cast<std::string&>(session_info));
-		ser_str(sw, this->salt, const_cast<std::string&>(inviter_name));
+		if (!is_u42_or_below(salt))
+		{
+			std::string trailer = enrich_invite_json(session_info, inviter_name);
+			ser_str(sw, this->salt, trailer);
+		}
+		else
+		{
+			ser_str(sw, this->salt, const_cast<std::string&>(inviter_name));
+		}
 		std::string unk_str; ser_str(sw, this->salt, unk_str);
 		udp_send(s, SocketAddr(this->reflexive_ip, this->reflexive_port_client), packData(sw.data, this->salt), this->is_dtls);
 	}
@@ -2020,7 +2072,11 @@ int main(int argc, const char** argv)
 				SOUP_UNUSED(unk_str);
 				if (auto e = account_map.find(acctId); e != account_map.end())
 				{
-					if (e->second.username.empty())
+					if (inviter_name.empty())
+					{
+						inviter_name = e->second.username;
+					}
+					else if (e->second.username.empty())
 					{
 						e->second.username = inviter_name;
 					}

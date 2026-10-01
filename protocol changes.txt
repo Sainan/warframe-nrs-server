@@ -11,3 +11,4 @@ U33 - introduced DTLS support
 U33 - changed C2STest packet format
 U35.5 - changed string length prefix to be variable-length
 U42 - added token
+U43 - changed game invite format
