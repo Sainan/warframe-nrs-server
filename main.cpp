@@ -194,25 +194,18 @@ static bool is_u42_or_below(const std::string_view& salt)
 		;
 }
 
-static std::string strip_name_glyphs(std::string name)
+static std::string strip_platform_suffix(std::string name)
 {
-	for (const char* glyph : { "\xEE\x80\x80", "\xEF\xBF\xBD" })
+	for (size_t pos; (pos = name.find("\xEE\x80\x80")) != std::string::npos; )
 	{
-		for (size_t pos; (pos = name.find(glyph)) != std::string::npos; )
-		{
-			name.erase(pos, 3);
-		}
-	}
-	while (!name.empty() && (name.back() == '?' || name.back() == ' '))
-	{
-		name.pop_back();
+		name.erase(pos, 3);
 	}
 	return name;
 }
 
 static std::string enrich_invite_json(const std::string& session_info, const std::string& inviter_name)
 {
-	const std::string name = strip_name_glyphs(inviter_name);
+	const std::string name = strip_platform_suffix(inviter_name);
 	UniquePtr<JsonNode> root = json::decode(session_info);
 	if (!root || !root->isObj())
 	{
@@ -491,7 +484,7 @@ struct AccountData
 			{
 				if (!is_u42_or_below(salt))
 				{
-					std::string from = strip_name_glyphs(inviter_name);
+					std::string from = strip_platform_suffix(inviter_name);
 					ser_str(sw, this->salt, from);
 				}
 				sw.u8(bindingServerId);
